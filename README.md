@@ -1,4 +1,4 @@
-# electric_power_-team
+# electric_power_team
 전력
 
 김선준
