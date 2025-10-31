@@ -14,7 +14,7 @@ st.set_page_config(page_title="전력 데이터 분석", page_icon="📊", layou
 # @st.cache_data를 사용하여 데이터 로딩 최적화
 @st.cache_data
 def load_data():
-    # 파일 경로를 사용자님의 환경에 맞게 조정해주세요.
+    # 파일 경로를 사용자님의 환경에 맞게 조정해주세요. 주석추가
     df = pd.read_csv(r"C:\Users\USER\Desktop\electric_power_-team\data\train_df.csv")
     # df = pd.read_csv("train_df.csv") # 사용자님이 업로드해주신 파일명을 사용했습니다.
 
