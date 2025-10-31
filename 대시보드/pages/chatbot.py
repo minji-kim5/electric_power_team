@@ -21,7 +21,7 @@ except:
 def call_gemini_api(user_query: str, context: str) -> str:
     """Gemini API를 호출하여 AI 응답 생성"""
     if not API_CONFIGURED:
-        return "❌ API 키가 설정되지 않았습니다."
+        return "❌ API 키가 설정되지 않았습니다. 환경 변수에서 API 키를 확인해주세요."
     
     prompt = f"""
 당신은 LS ELECTRIC 청주 공장의 전력 관리 AI 어시스턴트입니다.
@@ -33,10 +33,11 @@ def call_gemini_api(user_query: str, context: str) -> str:
 [답변 가이드]
 1. 질문의 핵심을 파악하세요
 2. 위 데이터를 바탕으로 정확하고 구체적으로 답변하세요
-3. 수치에는 단위를 명시하세요 (kWh, 원, %, 등)
-4. 중요한 정보는 **굵게** 표시하세요
-5. 친절하고 전문적인 톤을 유지하세요
-6. 한국어로만 답변하세요
+3. 데이터에 없는 질문은 "죄송하지만 해당 정보는 대시보드에 없습니다"라고 명확히 말하세요
+4. 수치에는 단위를 명시하세요 (kWh, 원, %, 등)
+5. 중요한 정보는 **굵게** 표시하세요
+6. 친절하고 전문적인 톤을 유지하세요
+7. 한국어로만 답변하세요
 
 사용자 질문: "{user_query}"
 """
@@ -48,11 +49,13 @@ def call_gemini_api(user_query: str, context: str) -> str:
     except Exception as e:
         error_msg = str(e)
         if "API_KEY" in error_msg or "401" in error_msg:
-            return "❌ Gemini API 키가 유효하지 않습니다."
+            return "❌ API 키 오류: Gemini API 키가 유효하지 않습니다. 환경 설정을 확인해주세요."
         elif "timeout" in error_msg.lower():
-            return "❌ 응답 시간 초과. 잠시 후 다시 시도해주세요."
+            return "❌ 응답 시간 초과: 30초 이내에 응답을 받지 못했습니다. 잠시 후 다시 시도해주세요."
+        elif "rate" in error_msg.lower():
+            return "❌ 요청 제한: API 요청이 너무 많습니다. 잠시 후 다시 시도해주세요."
         else:
-            return f"❌ 오류: {error_msg}"
+            return f"❌ 오류 발생: {error_msg}"
 
 
 # ---- 데이터 로드 ----
@@ -221,9 +224,9 @@ with chat_container:
     else:
         for msg in ss["chat_history"]:
             if msg["role"] == "user":
-                st.markdown(f'<div style="text-align: right;"><span class="user-message-content">{msg["content"]}</span></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="text-align: right; margin-bottom: 10px;"><span class="user-message-content">{msg["content"]}</span></div>', unsafe_allow_html=True)
             else:
-                st.markdown(f'<div style="text-align: left;"><span class="bot-message-content">{msg["content"]}</span></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="text-align: left; margin-bottom: 10px;"><span class="bot-message-content">{msg["content"]}</span></div>', unsafe_allow_html=True)
 
 st.divider()
 
@@ -246,14 +249,20 @@ with st.form(key="chat_form", clear_on_submit=True):
         # 사용자 메시지 추가
         ss["chat_history"].append({"role": "user", "content": user_input})
         
-        # 로딩 메시지 추가
-        with st.spinner("🤔 답변을 생각하는 중..."):
-            # 데이터 로드 및 컨텍스트 생성
-            df = load_data()
-            context_data = generate_context(df)
-            
-            # AI 응답 생성
-            ai_response = call_gemini_api(user_input, context_data)
+        # 데이터 로드 및 컨텍스트 생성 (빠른 응답을 위해 별도 처리)
+        df = load_data()
+        context_data = generate_context(df)
+        
+        # 로딩 상태 표시
+        placeholder = st.empty()
+        with placeholder.container():
+            st.spinner("🤔 답변을 생각하는 중...")
+        
+        # AI 응답 생성 (논블로킹)
+        ai_response = call_gemini_api(user_input, context_data)
+        
+        # 로딩 제거
+        placeholder.empty()
         
         # 응답 추가
         ss["chat_history"].append({"role": "assistant", "content": ai_response})
@@ -267,5 +276,3 @@ with col1:
     if st.button("🔄 대화 초기화", use_container_width=True):
         ss["chat_history"] = []
         st.rerun()
-
-## 주석 추가
