@@ -267,3 +267,5 @@ with col1:
     if st.button("🔄 대화 초기화", use_container_width=True):
         ss["chat_history"] = []
         st.rerun()
+
+## 주석 추가
