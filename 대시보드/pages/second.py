@@ -14,8 +14,8 @@ st.set_page_config(page_title="전력 데이터 분석", page_icon="📊", layou
 # @st.cache_data를 사용하여 데이터 로딩 최적화
 @st.cache_data
 def load_data():
-    # 파일 경로를 사용자님의 환경에 맞게 조정해주세요. 주석추가
-    df = pd.read_csv(r"C:\Users\USER\Desktop\electric_power_-team\data\train_df.csv")
+    # 파일 경로를 사용자님의 환경에 맞게 조정해주세요.
+    df = pd.read_csv(r"data_dash\\train_dash_df.csv")
     # df = pd.read_csv("train_df.csv") # 사용자님이 업로드해주신 파일명을 사용했습니다.
 
     # 필수 날짜/시간 처리
@@ -64,7 +64,7 @@ def get_pdf_bytes(file_path):
         return None
 
 # PDF 파일명 정의
-RATE_FILE_NAME = "C:\\Users\\USER\\Desktop\\electric_power_-team\\2024년도7월1일시행전기요금표(종합)_출력용.pdf"
+RATE_FILE_NAME = "data_dash\\2024년도7월1일시행전기요금표(종합)_출력용.pdf"
 pdf_data = get_pdf_bytes(RATE_FILE_NAME)
 
 # ----------------- Streamlit UI 시작 -----------------

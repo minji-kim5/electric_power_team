@@ -61,7 +61,7 @@ def call_gemini_api(user_query: str, context: str) -> str:
 # ---- 데이터 로드 ----
 @st.cache_data
 def load_data():
-    df = pd.read_csv("./data/train_df.csv")
+    df = pd.read_csv("대시보드\\train_dash_df.csv")
     df['측정일시'] = pd.to_datetime(df['측정일시'])
     df['month'] = df['측정일시'].dt.month
     df['year'] = df['측정일시'].dt.year
