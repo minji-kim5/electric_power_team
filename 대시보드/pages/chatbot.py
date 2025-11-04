@@ -1,7 +1,8 @@
 import streamlit as st
 import google.generativeai as genai
 import pandas as pd
-import time
+import re
+import plotly.graph_objects as go
 
 # 페이지 설정
 st.set_page_config(page_title="🤖 AI 챗봇", page_icon="🤖", layout="wide")
@@ -19,10 +20,23 @@ except:
     API_CONFIGURED = False
 
 
-def call_gemini_api(user_query: str, context: str) -> str:
+def extract_code_from_response(response_text: str) -> tuple[str, str]:
+    """응답에서 코드와 텍스트 분리"""
+    code_pattern = r'```python\n(.*?)\n```'
+    match = re.search(code_pattern, response_text, re.DOTALL)
+    
+    if match:
+        code = match.group(1)
+        text = re.sub(code_pattern, '', response_text, flags=re.DOTALL).strip()
+        return text, code
+    
+    return response_text, None
+
+
+def call_gemini_api(user_query: str, context: str) -> tuple[str, str]:
     """Gemini API를 호출하여 AI 응답 생성"""
     if not API_CONFIGURED:
-        return "❌ API 키가 설정되지 않았습니다."
+        return "❌ API 키가 설정되지 않았습니다.", None
     
     prompt = f"""
 당신은 LS ELECTRIC 청주 공장의 전력 관리 AI 어시스턴트입니다.
@@ -31,13 +45,33 @@ def call_gemini_api(user_query: str, context: str) -> str:
 [현재 대시보드 데이터]
 {context}
 
+참고: 사용 가능한 데이터프레임:
+- df: 전체 원본 데이터 (측정일시, 전력사용량(kWh), 전기요금(원), 탄소배출량(tCO2), 작업유형 등)
+- hourly: 시간대별 집계 데이터
+- monthly: 월별 집계 데이터
+- daily: 일별 집계 데이터
+
 [답변 가이드]
 1. 질문의 핵심을 파악하세요
 2. 위 데이터를 바탕으로 정확하고 구체적으로 답변하세요
 3. 수치에는 단위를 명시하세요 (kWh, 원, %, 등)
 4. 중요한 정보는 **굵게** 표시하세요
 5. 친절하고 전문적인 톤을 유지하세요
-6. 한국어로만 답변하세요
+
+[그래프 생성 요청 시]
+사용자가 데이터 시각화를 요청하면:
+- 분석 내용을 먼저 설명하고 그래프를 생성하세요
+- 답변에서 그래프를 요청했을 때는 그래프에 대해서만 언급하고, 코드를 요청했을 때는 코드에 대해서만 언급하세요.
+- 코드를 요청했을 때 다음 형식으로 Python 코드를 생성하세요:
+```python
+import plotly.graph_objects as go
+import pandas as pd
+
+# df는 이미 로드된 DataFrame입니다
+# 코드 작성...
+fig = go.Figure(...)
+st.plotly_chart(fig, use_container_width=True)
+```
 
 사용자 질문: "{user_query}"
 """
@@ -45,15 +79,16 @@ def call_gemini_api(user_query: str, context: str) -> str:
     try:
         model = genai.GenerativeModel(GEMINI_MODEL_NAME)
         response = model.generate_content(prompt, request_options={"timeout": 30})
-        return response.text.strip()
+        text_response, code = extract_code_from_response(response.text.strip())
+        return text_response, code
     except Exception as e:
         error_msg = str(e)
         if "API_KEY" in error_msg or "401" in error_msg:
-            return "❌ Gemini API 키가 유효하지 않습니다."
+            return "❌ API 키가 설정되지 않았습니다.", None
         elif "timeout" in error_msg.lower():
-            return "❌ 응답 시간 초과. 잠시 후 다시 시도해주세요."
+            return "❌ 응답 시간 초과. 잠시 후 다시 시도해주세요.", None
         else:
-            return f"❌ 오류: {error_msg}"
+            return f"❌ 오류: {error_msg}", None
 
 
 # ---- 데이터 로드 ----
@@ -62,8 +97,6 @@ def load_data():
     df = pd.read_csv("data_dash\\train_dash_df.csv")
     df['측정일시'] = pd.to_datetime(df['측정일시'])
     df['month'] = df['측정일시'].dt.month
-    df['year'] = df['측정일시'].dt.year
-    df['day'] = df['측정일시'].dt.day
     df['hour'] = df['측정일시'].dt.hour
     df['minute'] = df['측정일시'].dt.minute
     df['date'] = df['측정일시'].dt.date
@@ -168,6 +201,8 @@ def generate_context(df):
 # ---- 세션 상태 초기화 ----
 ss = st.session_state
 ss.setdefault("chat_history", [])
+ss.setdefault("graph_code", None)
+ss.setdefault("df", None)
 
 # ---- 제목 ----
 st.title("🤖 AI 챗봇")
@@ -205,11 +240,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---- 채팅 메시지 표시 (상단에 새 채팅 버튼) ----
+# ---- 채팅 메시지 표시 ----
 col_new_chat, col_empty = st.columns([1, 10])
 with col_new_chat:
     if st.button("➕ 새 채팅", use_container_width=True, help="새 채팅"):
         ss["chat_history"] = []
+        ss["graph_code"] = None
         st.rerun()
 
 chat_container = st.container(height=550, border=True)
@@ -226,26 +262,34 @@ with chat_container:
             if msg["role"] == "user":
                 st.markdown(f'<div style="text-align: right;"><span class="user-message-content">{msg["content"]}</span></div>', unsafe_allow_html=True)
             else:
-                st.markdown(f'<div style="text-align: left;"><span class="bot-message-content">{msg["content"]}</span></div>', unsafe_allow_html=True)
+                # 마크다운 형식으로 표시 (링크, 볼드 등 지원)
+                st.markdown(f'<div style="text-align: left; background: #e8f4f8; color: #333; padding: 12px 16px; border-radius: 12px; max-width: 70%; word-wrap: break-word; display: inline-block;">{msg["content"]}</div>', unsafe_allow_html=True)
         
         # 마지막 메시지가 사용자 메시지면 로딩 중 표시
         if ss["chat_history"][-1]["role"] == "user":
             with st.spinner("⏳ 답변을 생각하는 중..."):
                 # 데이터 로드 및 컨텍스트 생성
                 df = load_data()
+                ss["df"] = df
                 context_data = generate_context(df)
                 
                 # 마지막 사용자 질문 가져오기
                 user_query = ss["chat_history"][-1]["content"]
                 
-                # AI 응답 생성
-                ai_response = call_gemini_api(user_query, context_data)
+                ss["show_code_only"] = "코드" in user_query and "그래프" not in user_query
+                ss["show_graph_only"] = "그래프" in user_query and "코드" not in user_query
+
+                # AI 응답 생성 (텍스트와 코드 분리)
+                ai_response, code = call_gemini_api(user_query, context_data)
             
-            # 응답 추가
+            # 응답을 chat_history에 추가
             ss["chat_history"].append({"role": "assistant", "content": ai_response})
+            ss["graph_code"] = code
             st.rerun()
 
-# ---- 입력 영역 (폼 사용) ----
+# ---- 입력 영역 ----
+st.divider()
+
 with st.form(key="chat_form", clear_on_submit=True):
     col_input, col_send = st.columns([20, 1])
     
@@ -253,32 +297,53 @@ with st.form(key="chat_form", clear_on_submit=True):
         user_input = st.text_input(
             "",
             placeholder="질문을 입력하고 엔터를 누르세요...",
+            key="chat_input",
             label_visibility="collapsed"
         )
     
     with col_send:
         submit_button = st.form_submit_button("⬆️", use_container_width=True, help="전송")
     
-    # 폼 제출 시에만 실행
     if submit_button and user_input and user_input.strip():
-        # 사용자 메시지 추가
         ss["chat_history"].append({"role": "user", "content": user_input})
+        ss["graph_code"] = None
         st.rerun()
 
-# 로딩 및 응답 처리
-if ss["chat_history"] and ss["chat_history"][-1]["role"] == "user":
-    # 마지막 메시지가 사용자 메시지면 AI 응답 생성
-    with st.spinner("⏳ 답변을 생각하는 중..."):
-        # 데이터 로드 및 컨텍스트 생성
-        df = load_data()
-        context_data = generate_context(df)
-        
-        # 마지막 사용자 질문 가져오기
-        user_query = ss["chat_history"][-1]["content"]
-        
-        # AI 응답 생성
-        ai_response = call_gemini_api(user_query, context_data)
-    
-    # 응답 추가
-    ss["chat_history"].append({"role": "assistant", "content": ai_response})
-    st.rerun()
+# ---- 그래프 카드 ----
+if ss.get("graph_code") is not None:
+    st.divider()
+    with st.container(border=True):
+        st.subheader("📊 데이터 시각화")
+
+        # ✅ 코드만 보여주기 요청 시
+        if ss.get("show_code_only"):
+            st.code(ss["graph_code"], language="python")
+
+        # ✅ 그래프만 보여주기 요청 시
+        elif ss.get("show_graph_only"):
+            try:
+                exec_globals = {
+                    'st': st,
+                    'go': go,
+                    'pd': pd,
+                    'df': ss["df"],
+                    'plotly': __import__('plotly')
+                }
+                exec(ss["graph_code"], exec_globals)
+            except Exception as e:
+                st.error(f"❌ 그래프 생성 오류: {str(e)}")
+
+        # ✅ 둘 다 요청하거나 일반 요청 시 (기본 동작)
+        else:
+            st.code(ss["graph_code"], language="python")
+            try:
+                exec_globals = {
+                    'st': st,
+                    'go': go,
+                    'pd': pd,
+                    'df': ss["df"],
+                    'plotly': __import__('plotly')
+                }
+                exec(ss["graph_code"], exec_globals)
+            except Exception as e:
+                st.error(f"❌ 그래프 생성 오류: {str(e)}")

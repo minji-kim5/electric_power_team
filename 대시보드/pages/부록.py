@@ -59,7 +59,7 @@ with st.expander("① EDA", expanded=False):
     st.dataframe(table_data, use_container_width=True)
 
     st.image("data_dash\\hourly_pattern.png", use_container_width=True)
-
+    st.markdown("---")
  
     # 3. 데이터 학습 제외 사유 및 예외 패턴
     st.markdown("### 3. 학습 데이터 제외 사유 (1~2월 야근 패턴)")
