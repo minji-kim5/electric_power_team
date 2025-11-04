@@ -1,6 +1,7 @@
 import streamlit as st
 import google.generativeai as genai
 import pandas as pd
+import time
 
 # 페이지 설정
 st.set_page_config(page_title="🤖 AI 챗봇", page_icon="🤖", layout="wide")
@@ -58,7 +59,7 @@ def call_gemini_api(user_query: str, context: str) -> str:
 # ---- 데이터 로드 ----
 @st.cache_data
 def load_data():
-    df = pd.read_csv("대시보드\\train_dash_df.csv")
+    df = pd.read_csv("data_dash\\train_dash_df.csv")
     df['측정일시'] = pd.to_datetime(df['측정일시'])
     df['month'] = df['측정일시'].dt.month
     df['year'] = df['측정일시'].dt.year
@@ -73,7 +74,6 @@ def generate_context(df):
     """대시보드 데이터로 컨텍스트 생성"""
     filtered_df = df.copy()
     
-    # KPI 계산
     total_power = filtered_df['전력사용량(kWh)'].sum()
     total_cost = filtered_df['전기요금(원)'].sum()
     total_carbon = filtered_df['탄소배출량(tCO2)'].sum()
@@ -102,7 +102,6 @@ def generate_context(df):
     for _, row in monthly.iterrows():
         context += f"\n  * {int(row['month'])}월: 사용량 {row['전력사용량(kWh)']:,.0f} kWh, 평균요금 {row['전기요금(원)']:,.0f} 원"
     
-    # 시간대별 분석
     hourly = filtered_df.groupby('hour').agg({
         '전력사용량(kWh)': ['mean', 'min', 'max']
     }).reset_index()
@@ -127,7 +126,6 @@ def generate_context(df):
     for _, row in load_analysis.iterrows():
         context += f"\n  * {row['작업유형명']}: 총 {row['sum']:,.0f} kWh ({int(row['count'])}건), 평균 {row['mean']:,.0f} kWh"
     
-    # 역률 정보
     cycle_df = filtered_df.copy()
     cycle_df['time_15min'] = ((cycle_df['hour'] * 60 + cycle_df['minute']) // 15) * 15
     
@@ -170,7 +168,6 @@ def generate_context(df):
 # ---- 세션 상태 초기화 ----
 ss = st.session_state
 ss.setdefault("chat_history", [])
-ss.setdefault("last_user_input", "")
 
 # ---- 제목 ----
 st.title("🤖 AI 챗봇")
@@ -208,7 +205,13 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---- 채팅 메시지 표시 ----
+# ---- 채팅 메시지 표시 (상단에 새 채팅 버튼) ----
+col_new_chat, col_empty = st.columns([1, 10])
+with col_new_chat:
+    if st.button("➕ 새 채팅", use_container_width=True, help="새 채팅"):
+        ss["chat_history"] = []
+        st.rerun()
+
 chat_container = st.container(height=550, border=True)
 with chat_container:
     if not ss["chat_history"]:
@@ -224,12 +227,27 @@ with chat_container:
                 st.markdown(f'<div style="text-align: right;"><span class="user-message-content">{msg["content"]}</span></div>', unsafe_allow_html=True)
             else:
                 st.markdown(f'<div style="text-align: left;"><span class="bot-message-content">{msg["content"]}</span></div>', unsafe_allow_html=True)
+        
+        # 마지막 메시지가 사용자 메시지면 로딩 중 표시
+        if ss["chat_history"][-1]["role"] == "user":
+            with st.spinner("⏳ 답변을 생각하는 중..."):
+                # 데이터 로드 및 컨텍스트 생성
+                df = load_data()
+                context_data = generate_context(df)
+                
+                # 마지막 사용자 질문 가져오기
+                user_query = ss["chat_history"][-1]["content"]
+                
+                # AI 응답 생성
+                ai_response = call_gemini_api(user_query, context_data)
+            
+            # 응답 추가
+            ss["chat_history"].append({"role": "assistant", "content": ai_response})
+            st.rerun()
 
-st.divider()
-
-# ---- 입력 영역 (폼 사용 - 진짜 해결책) ----
+# ---- 입력 영역 (폼 사용) ----
 with st.form(key="chat_form", clear_on_submit=True):
-    col_input, col_send = st.columns([5, 1])
+    col_input, col_send = st.columns([20, 1])
     
     with col_input:
         user_input = st.text_input(
@@ -239,33 +257,28 @@ with st.form(key="chat_form", clear_on_submit=True):
         )
     
     with col_send:
-        submit_button = st.form_submit_button("전송", use_container_width=True)
+        submit_button = st.form_submit_button("⬆️", use_container_width=True, help="전송")
     
     # 폼 제출 시에만 실행
     if submit_button and user_input and user_input.strip():
         # 사용자 메시지 추가
         ss["chat_history"].append({"role": "user", "content": user_input})
-        
-        # 로딩 메시지 추가
-        with st.spinner("🤔 답변을 생각하는 중..."):
-            # 데이터 로드 및 컨텍스트 생성
-            df = load_data()
-            context_data = generate_context(df)
-            
-            # AI 응답 생성
-            ai_response = call_gemini_api(user_input, context_data)
-        
-        # 응답 추가
-        ss["chat_history"].append({"role": "assistant", "content": ai_response})
         st.rerun()
 
-# ---- 하단 버튼 ----
-st.divider()
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    if st.button("🔄 대화 초기화", use_container_width=True):
-        ss["chat_history"] = []
-        st.rerun()
-
-## 주석 추가
+# 로딩 및 응답 처리
+if ss["chat_history"] and ss["chat_history"][-1]["role"] == "user":
+    # 마지막 메시지가 사용자 메시지면 AI 응답 생성
+    with st.spinner("⏳ 답변을 생각하는 중..."):
+        # 데이터 로드 및 컨텍스트 생성
+        df = load_data()
+        context_data = generate_context(df)
+        
+        # 마지막 사용자 질문 가져오기
+        user_query = ss["chat_history"][-1]["content"]
+        
+        # AI 응답 생성
+        ai_response = call_gemini_api(user_query, context_data)
+    
+    # 응답 추가
+    ss["chat_history"].append({"role": "assistant", "content": ai_response})
+    st.rerun()
