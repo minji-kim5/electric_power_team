@@ -2,6 +2,7 @@ import time
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime
 
 st.set_page_config(page_title="12월 예측 - 컨트롤", layout="wide")
@@ -62,7 +63,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚡ 실시간 전력 및 전기요금 모니터링")
+st.title("실시간 전력 및 전기요금 모니터링")
 
 # ---- 데이터 로드 (초기 1회만) ----
 @st.cache_data
@@ -77,7 +78,9 @@ ss.setdefault("running", False)
 ss.setdefault("step", 0)
 ss.setdefault("accumulated_data", pd.DataFrame())
 ss.setdefault("data_loaded", False)
-ss.setdefault("popup_open", False)
+ss.setdefault("prev_show_peak", False)
+ss.setdefault("prev_show_pf", False)
+ss.setdefault("table_key", 0)
 
 # 데이터 로드
 if not ss.data_loaded:
@@ -97,28 +100,37 @@ st.sidebar.subheader("📊 차트 옵션")
 update_interval = st.sidebar.slider(
     "데이터 출력 간격 (초)",
     min_value=0.1,
-    max_value=3.0,
+    max_value=4.0,
     value=2.0,
     step=0.1,
     key="update_interval"
 )
 
-show_peak_line = st.sidebar.checkbox("피크전력선 표시", value=False, key="show_peak")
-show_pf_line = st.sidebar.checkbox("기준역률선 표시", value=False, key="show_pf")
+# 실시간 전력사용량 추이 아코디언
+with st.sidebar.expander("실시간 전력사용량 추이"):
+    show_peak_line = st.checkbox("피크전력선 표시", value=False, key="show_peak")
+
+# 실시간 역률 추이 아코디언
+with st.sidebar.expander("실시간 역률 추이"):
+    show_pf_line = st.checkbox("기준역률선 표시", value=False, key="show_pf")
+
+# 체크박스 상태 변화 감지 및 선택 초기화
+if ss.prev_show_peak != show_peak_line or ss.prev_show_pf != show_pf_line:
+    ss.table_key += 1  # 테이블 key 변경으로 선택 상태 완전 초기화
+    ss.prev_show_peak = show_peak_line
+    ss.prev_show_pf = show_pf_line
 
 if start:
     ss.running = True
-    ss.popup_open = False
 if stop:
     ss.running = False
 if reset:
     ss.running = False
     ss.step = 0
     ss.accumulated_data = pd.DataFrame()
-    ss.popup_open = False
 
 # ---- 데이터 누적 로직 ----
-if ss.running and ss.step < len(ss.full_data) and not ss.popup_open:
+if ss.running and ss.step < len(ss.full_data):
     current_row = ss.full_data.iloc[ss.step:ss.step+1]
     ss.accumulated_data = pd.concat([ss.accumulated_data, current_row], ignore_index=True)
     ss.step += 1
@@ -177,7 +189,7 @@ if len(ss.accumulated_data) > 0:
     st.divider()
     
     # === 실시간 전력사용량 라인차트 + 당일 전력사용량 게이지 ===
-    st.subheader("📈 실시간 전력사용량 추이 및 당일 전력사용량")
+    st.subheader("실시간 전력사용량 추이 및 당일 전력사용량")
     
     chart_col, gauge_col = st.columns([3, 1])
     
@@ -192,7 +204,7 @@ if len(ss.accumulated_data) > 0:
         # 피크 전력 계산 (기존 최대값 157.18 kWh 기준)
         BASE_PEAK = 157.18
         current_max = df['전력사용량_예측'].max()
-        peak_power = max(BASE_PEAK, current_max)  # 157.18을 넘으면 갱신
+        peak_power = max(BASE_PEAK, current_max)
         
         fig = px.line(
             df_chart, 
@@ -208,7 +220,7 @@ if len(ss.accumulated_data) > 0:
             marker=dict(size=6, color='#1f77b4')
         )
         
-        # 피크 전력 기준선 추가 (체크박스로 제어)
+        # 피크 전력 기준선 추가
         if show_peak_line:
             fig.add_hline(
                 y=peak_power, 
@@ -220,21 +232,18 @@ if len(ss.accumulated_data) > 0:
             )
         
         # y축 범위 동적 조정
-        if show_peak_line:
-            # 피크선 표시 시: 피크값까지 표시
-            y_max = peak_power * 1.1
-        else:
-            # 피크선 미표시 시: 현재 차트 데이터 기준
-            y_max = df_chart['전력사용량_예측'].max() * 1.15
+        y_max = peak_power * 1.1 if show_peak_line else df_chart['전력사용량_예측'].max() * 1.15
         
         fig.update_layout(
             height=450,
             xaxis_title='측정일시',
             yaxis_title='전력사용량 (kWh)',
             yaxis_range=[0, y_max],
-            hovermode='x unified'
+            hovermode='x unified',
+            uirevision='power_chart',
+            transition={'duration': 0}
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="power_chart", config={'displayModeBar': False})
     
     with gauge_col:
         # 현재 날짜 추출
@@ -248,24 +257,19 @@ if len(ss.accumulated_data) > 0:
         # 현재 날짜의 작업휴무 상태 확인
         current_status = latest['작업휴무']
         
-        # 작업휴무에 따른 기준 설정 (3~11월 데이터 기준)
+        # 작업휴무에 따른 기준 설정
         if current_status == '가동':
-            threshold_95 = 4270  # 가동일 95% 분위수
-            max_range = 6500     # 게이지 최대 범위
+            threshold_95 = 4270
+            max_range = 6500
             status_text = "가동일"
             bar_color = "#1f77b4"
-            # 눈금 위치 (피크 기준 포함)
             tick_vals = [0, 1300, 2600, threshold_95, 5200, max_range]
-        else:  # 휴무
-            threshold_95 = 360   # 휴무일 95% 분위수
-            max_range = 550      # 게이지 최대 범위
+        else:
+            threshold_95 = 360
+            max_range = 550
             status_text = "휴무일"
             bar_color = "#90CAF9"
-            # 눈금 위치 (피크 기준 포함)
             tick_vals = [0, 110, 220, threshold_95, 440, max_range]
-        
-        # 세로 게이지 차트
-        import plotly.graph_objects as go
         
         gauge_fig = go.Figure(go.Indicator(
             mode="gauge+number",
@@ -308,20 +312,22 @@ if len(ss.accumulated_data) > 0:
         
         gauge_fig.update_layout(
             height=450,
-            margin=dict(l=30, r=30, t=80, b=30)
+            margin=dict(l=30, r=30, t=80, b=30),
+            uirevision='gauge_chart',
+            transition={'duration': 0}
         )
         
-        st.plotly_chart(gauge_fig, use_container_width=True)
+        st.plotly_chart(gauge_fig, use_container_width=True, key="gauge_chart", config={'displayModeBar': False})
     
     st.divider()
     
     # === 역률 실시간 추이 + 시간대별 부하 ===
-    st.subheader("📶 실시간 역률 추이 및 시간대별 부하")
+    st.subheader("실시간 역률 추이 및 시간대별 부하")
     
     pf_col, load_col = st.columns([3, 1])
     
     with pf_col:
-        # 역률 통합 차트 (지상역률 + 진상역률)
+        # 역률 통합 차트
         df_chart_pf = df.tail(30).copy()
         
         # 라인차트 전용: 자정(00:00) 시간 데이터의 날짜를 다음날로 수정
@@ -352,20 +358,12 @@ if len(ss.accumulated_data) > 0:
             marker=dict(size=5)
         )
         
-        # 기준역률선 추가 (체크박스로 제어)
+        # 기준역률선 추가
         if show_pf_line:
-            # 현재 시각(최신 데이터) 기준으로 판단
             time_val = latest['측정일시']
-            hour = time_val.hour
-            minute = time_val.minute
+            time_decimal = time_val.hour + time_val.minute / 60.0
             
-            # 시간을 소수로 변환 (09:15 = 9.25)
-            time_decimal = hour + minute / 60.0
-            
-            # 9:15 AM (9.25) ~ 10:00 PM (22.0): 지상역률 90%
-            # 그 외 시간: 진상역률 95%
             if 9.25 <= time_decimal < 22.0:
-                # 지상역률 기준선 (90%)
                 fig_pf.add_hline(
                     y=90,
                     line_dash="dash",
@@ -375,7 +373,6 @@ if len(ss.accumulated_data) > 0:
                     annotation_position="right"
                 )
             else:
-                # 진상역률 기준선 (95%)
                 fig_pf.add_hline(
                     y=95,
                     line_dash="dash",
@@ -397,17 +394,14 @@ if len(ss.accumulated_data) > 0:
                 y=1.02,
                 xanchor="right",
                 x=1
-            )
+            ),
+            uirevision='pf_chart',
+            transition={'duration': 0}
         )
-        st.plotly_chart(fig_pf, use_container_width=True)
+        st.plotly_chart(fig_pf, use_container_width=True, key="pf_chart", config={'displayModeBar': False})
     
     with load_col:
-        # 시간대별 부하 원형 차트 (Barpolar 사용)
-        import plotly.graph_objects as go
-        import numpy as np
-        
-        # 현재 날짜와 작업휴무 상태 확인
-        current_date = latest['측정일시'].date()
+        # 시간대별 부하 원형 차트
         current_status = latest['작업휴무']
         current_time = latest['측정일시'].time()
         current_hour = current_time.hour
@@ -415,7 +409,6 @@ if len(ss.accumulated_data) > 0:
         
         # 가동일/휴무일에 따른 시간대별 부하 설정
         if current_status == '가동':
-            # 가동일 부하 구간
             load_segments = [
                 {'start': 0, 'end': 9, 'load': '경부하', 'color': '#90EE90'},
                 {'start': 9, 'end': 10, 'load': '중간부하', 'color': '#FFD700'},
@@ -428,40 +421,31 @@ if len(ss.accumulated_data) > 0:
             ]
             status_display = '가동일'
         else:
-            # 휴무일 부하 구간
             load_segments = [
                 {'start': 0, 'end': 24, 'load': '경부하', 'color': '#90EE90'}
             ]
             status_display = '휴무일'
         
-        # Barpolar 차트 생성
         fig_load = go.Figure()
-        
-        # 각 부하 구간을 bar로 추가
         load_types = {'경부하': True, '중간부하': True, '최대부하': True}
         
         for segment in load_segments:
             start_hour = segment['start']
             end_hour = segment['end']
             duration = end_hour - start_hour
-            
-            # 중심 각도 계산 (0시 = 0도 위쪽, 시계방향)
             center_hour = (start_hour + end_hour) / 2
-            theta = center_hour * 15  # 시간당 15도, 시계방향
-            
-            # 각도 폭 계산
+            theta = center_hour * 15
             width = duration * 15
             
-            # 범례 표시 여부 (각 부하 유형당 한 번만)
             show_legend = load_types.get(segment['load'], False)
             if show_legend:
                 load_types[segment['load']] = False
             
             fig_load.add_trace(go.Barpolar(
-                r=[1],  # 반지름
+                r=[1],
                 theta=[theta],
                 width=[width],
-                base=0.8,  # 0.8~1.0 범위로 복구
+                base=0.8,
                 marker=dict(
                     color=segment['color'],
                     line=dict(color='white', width=2)
@@ -471,22 +455,22 @@ if len(ss.accumulated_data) > 0:
                 hovertemplate=f"{start_hour:02d}:00-{end_hour:02d}:00<br>{segment['load']}<extra></extra>"
             ))
         
-        # 시간 표기 추가 (0~23시 모두 표시, 굵게)
+        # 시간 표기 추가
         for hour in range(24):
-            theta = hour * 15  # 시계방향
+            theta = hour * 15
             fig_load.add_trace(go.Scatterpolar(
                 r=[1.35],
                 theta=[theta],
                 mode='text',
-                text=[f'<b>{hour}</b>'],  # 굵게 표시
-                textfont=dict(size=11, color='#333333'),  # 크기 증가 및 진한 색상
+                text=[f'<b>{hour}</b>'],
+                textfont=dict(size=11, color='#333333'),
                 showlegend=False,
                 hoverinfo='skip'
             ))
         
         # 시계바늘 추가
         time_in_hours = current_hour + current_minute / 60.0
-        needle_theta = time_in_hours * 15  # 시계방향
+        needle_theta = time_in_hours * 15
         
         fig_load.add_trace(go.Scatterpolar(
             r=[0, 0.85],
@@ -497,7 +481,6 @@ if len(ss.accumulated_data) > 0:
             hoverinfo='skip'
         ))
         
-        # 시계바늘 끝 화살표
         fig_load.add_trace(go.Scatterpolar(
             r=[0.85],
             theta=[needle_theta],
@@ -513,7 +496,6 @@ if len(ss.accumulated_data) > 0:
             hoverinfo='skip'
         ))
         
-        # 중심 점
         fig_load.add_trace(go.Scatterpolar(
             r=[0],
             theta=[0],
@@ -548,25 +530,27 @@ if len(ss.accumulated_data) > 0:
                 y=-0.05,
                 xanchor="center",
                 x=0.5,
-                font=dict(size=11)  # 범례 크기 증가
+                font=dict(size=11)
             ),
             height=450,
-            margin=dict(l=10, r=10, t=80, b=40)
+            margin=dict(l=10, r=10, t=80, b=40),
+            uirevision='load_chart',
+            transition={'duration': 0}
         )
         
-        st.plotly_chart(fig_load, use_container_width=True)
+        st.plotly_chart(fig_load, use_container_width=True, key="load_chart", config={'displayModeBar': False})
     
     st.divider()
     
     # === 데이터 로그 (행 선택 가능) ===
-    st.subheader("📋 최근 데이터 로그")
+    st.subheader("최근 데이터 로그")
     
     # 최신 5개 데이터
     recent_data = df.tail(5)[['측정일시', '작업유형', '작업휴무', '지상역률(%)', '진상역률(%)']].copy()
     recent_data_full = df.tail(5).copy().reset_index(drop=True)
     recent_data = recent_data.reset_index(drop=True)
     
-    # 데이터프레임 표시 (선택 모드, 인덱스 숨김)
+    # 데이터프레임 표시
     event = st.dataframe(
         recent_data,
         use_container_width=True,
@@ -574,19 +558,16 @@ if len(ss.accumulated_data) > 0:
         height=220,
         selection_mode="single-row",
         on_select="rerun",
-        key="data_table"
+        key=f"data_table_{ss.table_key}"
     )
     
-    # 행 선택 시 팝업 표시
+    # 행 선택 시 팝업 표시 (닫기 버튼 제거, 팝업 로직 개선)
     if event.selection.rows:
         selected_idx = event.selection.rows[0]
         selected_detail = recent_data_full.iloc[selected_idx]
         
-        # 팝업이 열려있음을 표시
-        ss.popup_open = True
-        
-        # 팝업 다이얼로그
-        @st.dialog("📊 상세 정보")
+        # 팝업 다이얼로그 (닫기 버튼 제거됨)
+        @st.dialog("상세 정보")
         def show_detail():
             st.markdown(f"### 측정일시: {selected_detail['측정일시']}")
             
@@ -608,16 +589,8 @@ if len(ss.accumulated_data) > 0:
             with info_col2:
                 st.info(f"**지상역률:** {selected_detail['지상역률(%)']:.2f}%")
                 st.info(f"**진상역률:** {selected_detail['진상역률(%)']:.2f}%")
-            
-            # 팝업 닫기 버튼
-            if st.button("닫기", type="primary", use_container_width=True):
-                ss.popup_open = False
-                st.rerun()
         
         show_detail()
-    else:
-        # 팝업이 닫혔음을 표시
-        ss.popup_open = False
     
     # 진행 상태 표시
     st.divider()
@@ -628,8 +601,8 @@ else:
     st.info("▶ '재생' 버튼을 눌러 모니터링을 시작하세요.")
     st.caption(f"📍 데이터가 {update_interval}초마다 자동으로 업데이트됩니다.")
 
-# ---- 자동 반복 (슬라이더로 조정 가능한 간격, 팝업 열려있을 때는 정지) ----
-if ss.running and ss.step < len(ss.full_data) and not ss.popup_open:
+# ---- 자동 반복 ----
+if ss.running and ss.step < len(ss.full_data):
     time.sleep(update_interval)
     try:
         st.rerun()
